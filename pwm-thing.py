@@ -1,6 +1,7 @@
 from __future__ import division, print_function
 from webthing import (Action, Event, Property, MultipleThings, Thing, Value,
                       WebThingServer)
+import ina219
 import logging
 import random
 import time
@@ -13,53 +14,52 @@ import mraa
 pwm0 = mraa.Pwm(26)             # GPIO18 (P26) PWM0
 #pwm0.period(0.001)             # as seconds in float
 pwm0.period_us(20000)           # 20ms period ==> 50Hz
-print("period max: "+str(pwm0.max_period())+" min: "+str(pwm0.min_period()))
 pwm0.enable(True)               # Start sending PWM signal
 
-gpio13 = mraa.Gpio(18)          # gpio13 PIN P18 on Linkit Smart 7688
-gpio12 = mraa.Gpio(19)          # gpio12 PIN P19 on Linkit Smart 7688
+gpio13 = mraa.Gpio(18)          # gpio13 PIN P18 on Linkit Smart 7688 to Relay2
+gpio12 = mraa.Gpio(19)          # gpio12 PIN P19 on Linkit Smart 7688 from Relay1
 gpio13.dir(mraa.DIR_OUT)        # set as OUTPUT pin
-gpio12.dir(mraa.DIR_IN)         # set as INPUT pin
-manual_switch_state_previous = gpio12.read()
+gpio12.dir(mraa.DIR_IN)         # set as INPUT pin, its a pullup, so its High when the switch is open.
 
-class FadeAction(Action):
+r1_previous = False
+
+
+class FadeLedStrip(Action):
 
     def __init__(self, thing, input_):
         Action.__init__(self, uuid.uuid4().hex, thing, 'fade', input_=input_)
 
     def perform_action(self):
-        brigthness_after = self.input['brightness']
+        brightness_after = self.input['brightness']
         brightness_now = self.thing.get_property('brightness')
-        if  brigthness_after > brightness_now :
-            percentage = brigthness_after - brightness_now
+        if  brightness_after > brightness_now :
+            percentage = brightness_after - brightness_now
             delay_ms = self.input['duration'] / percentage
-            logging.info('start incrementing, brightness now %s, brightness afer %s, percentage %s, delay_ms %s, duration %s',
+            logging.debug('FadeLedStrip.perform_action: start incrementing, brightness now %s, brightness afer %s, percentage %s, delay_ms %s, duration %s',
                          brightness_now,
-                         brigthness_after,
+                         brightness_after,
                          percentage,
                          delay_ms,
                          self.input['duration'])
-            while brigthness_after > self.thing.get_property('brightness'):
+            while brightness_after > self.thing.get_property('brightness'):
                 self.thing.set_property('brightness', 
                                         self.thing.get_property('brightness')+1)
                 time.sleep(delay_ms / 1000)
-            logging.info('finished incrementing')
-            return
-        if brigthness_after < brightness_now:
-            percentage = brightness_now - brigthness_after
+            logging.debug('finished incrementing')
+        elif brightness_after < brightness_now:
+            percentage = brightness_now - brightness_after
             delay_ms = self.input['duration'] / percentage
-            logging.info('start decrementing, brightness now %s, brightness afer %s, percentage %s, delay_ms %s, duration %s',
+            logging.debug('start decrementing, brightness now %s, brightness afer %s, percentage %s, delay_ms %s, duration %s',
                         brightness_now,
-                        brigthness_after,
+                        brightness_after,
                         percentage,delay_ms,
                         self.input['duration'])
-            while brigthness_after < self.thing.get_property('brightness'):
+            while brightness_after < self.thing.get_property('brightness'):
                 self.thing.set_property('brightness', 
                                         self.thing.get_property('brightness')-1)
                 time.sleep(delay_ms / 1000)
-            logging.info('finished decrementing')
-            return
-
+            logging.debug('FadeLedStrip.perform_action: finished decrementing')
+        return
 
 class LedStrip(Thing):
     """A LED-Strip in the entry of my upper Level"""
@@ -75,20 +75,20 @@ class LedStrip(Thing):
             'A web connected LED-Strip'
         )
 
+        self.state = Value(self.get_state(),self.toggle_digitalswitch)
+        logging.debug('LedStrip:digitalswitch, get_property(self): %s',self.state.last_value)
         self.add_property(
             Property(self,
-                     'state',
-                     Value(self.get_state(),self.set_state),
+                     'digitalswitch',
+                     self.state,
                      metadata={
                          '@type': 'OnOffProperty',
-                         'title': 'On/Off',
+                         'title': 'LED On/Off',
                          'type': 'boolean',
                          'description': 'Whether the Strip is turned on',
                      }
             )
         )
-        self.timer = tornado.ioloop.PeriodicCallback(self.get_state,1000)
-        self.timer.start()
 
         self.add_property(
             Property(self,
@@ -105,6 +105,7 @@ class LedStrip(Thing):
                      }
             )
         )
+
         self.add_available_action('fade',
         {
             'title': 'Fade',
@@ -130,7 +131,13 @@ class LedStrip(Thing):
                 },
             },
         },
-        FadeAction)
+        FadeLedStrip)
+
+        self.timer = tornado.ioloop.PeriodicCallback(
+                self.get_r1,
+                1000
+            )
+        self.timer.start()
 
     def get_brightness(self):
         """get the level from mraa.pwm"""
@@ -141,7 +148,30 @@ class LedStrip(Thing):
         """set the level with mraa"""
         level = round((brightness/100),2)
         pwm0.write(level)
+        on_off = self.get_property('digitalswitch')
+        if brightness < 1 and on_off == True:
+            self.set_property('digitalswitch', False)
+        elif brightness> 1 and on_off == False: 
+            self.set_property('digitalswitch', True)
         return brightness
+
+    def gpio12_read(self):
+        r1 = bool(gpio12.read())
+        if r1 == True:
+            r1 = False
+        elif r1 == False:
+            r1 = True
+        return r1
+
+    def get_r1(self):
+        """ only if footswitch changes do more """
+        global r1_previous
+        r1 = self.gpio12_read()
+        if r1 != r1_previous:
+            logging.debug(' ')
+            logging.debug('LedStrip.get_r1 changed: r1 %s, r1_previous %s', r1, r1_previous) 
+            self.state.notify_of_external_update(self.get_state())
+        r1_previous = r1
 
     def get_state(self):
         """
@@ -149,39 +179,108 @@ class LedStrip(Thing):
         with 3-ways. 
         https://en.wikipedia.org/wiki/Multiway_switching#Traveler_system
         """
-        state = bool(gpio13.read())
-        global manual_switch_state_previous
-        manual_switch_state = gpio12.read()
-        if manual_switch_state_previous != manual_switch_state:
-            if state == True:
-                state = False
-                pass     
-            elif state == False:
-                state = True
-                pass
-        manual_switch_state_previous = manual_switch_state
-        self.set_property('state',state)
+        footswitch = self.gpio12_read()          # relay 1
+        digitalswitch = bool(gpio13.read())       # relay 2
+        orb = footswitch ^ digitalswitch
+        logging.debug('LedStrip.get_state: footswitch %s, digitalswitch %s, orb %s', footswitch, digitalswitch,orb)
+        return orb
 
-    def set_state(self, state):
-        """set the state with mraa"""
-        gpio13.write(state)
-        return state
+    def toggle_digitalswitch(self,state):
+        """
+        gateway or other GUI representaton of switch to turn on/off LedStrip.
+        """
+        logging.debug('LedStrip.toggle_digitalswitch: state1 %s', state)
+        gpio13.write(not gpio13.read())
 
-    def cancel_update_status_task(self):
+    def cancel_update_state_task(self):
+        logging.info('stopping the status update loop task')
+        self.timer.stop()
+
+class vorraum_node(Thing):
+    """A node in the entry of my upper Level"""
+    def __init__(self):
+        self.id = 'urn:dev:ops:og-vorraum-vorraum-node'
+        self.name = 'node-og-vorraum'
+        Thing.__init__(
+            self,
+            self.id,
+            self.name,
+            ['EnergyMonitor'],
+            'A web connected node'
+        )
+        self.ina219 = ina219.INA219(busnum=0,address=0x40)
+        self.power = Value(0.0)
+        self.add_property(
+            Property(self,
+                     'Power',
+                     self.power,
+                     metadata={
+                         '@type': 'InstantaneousPowerProperty',
+                         'title': 'Power',
+                         'type': 'float',
+                         'description': 'the power used by this node',
+                     }
+            )
+        )
+        self.volt = Value(0.0)
+        self.add_property(
+            Property(self,
+                     'Voltage',
+                     self.volt,
+                     metadata={
+                         '@type': 'VoltageProperty',
+                         'title': 'Voltage',
+                         'type': 'float',
+                         'description': 'the voltage used by this node',
+                     }
+            )
+        )
+        self.current = Value(0.0)
+        self.add_property(
+            Property(self,
+                     'Current',
+                     self.current,
+                     metadata={
+                         '@type': 'CurrentProperty',
+                         'title': 'Current',
+                         'type': 'float',
+                         'description': 'the current used by this node',
+                     }
+            )
+        )
+        self.timer = tornado.ioloop.PeriodicCallback(
+                self.get_power,
+                3000000
+            )
+        self.timer.start()
+
+    def get_power(self):
+        try:
+            bus_voltage     = self.ina219.get_bus_voltage_mV()
+            self.volt.notify_of_external_update(bus_voltage / 1000)
+            curent          = self.ina219.get_current_mA()
+            self.current.notify_of_external_update(curent / 1000)
+            milliwats       = self.ina219.get_power_mW()
+            self.power.notify_of_external_update(milliwats / 1000)
+        except AssertionError as e:
+            logging.error(repr(e))
+
+    def cancel_update_node_task(self):
+        logging.info('stopping the node update loop task')
         self.timer.stop()
 
 def run_server():
     vorraum_led = LedStrip()
+    vorraum_functions = vorraum_node()
 
     # If adding more than one thing, use MultipleThings() with a name.
     # In the single thing case, the thing's name will be broadcast.
-    server = WebThingServer(MultipleThings([vorraum_led],'LightAndTempDevice'), port=8888)
+    server = WebThingServer(MultipleThings([vorraum_led,vorraum_functions],'LightAndTempDevice'), port=8888)
     try:
         logging.info('starting the server')
         server.start()
     except KeyboardInterrupt:
-        logging.info('stopping the status update loop task')
-        vorraum_led.cancel_update_status_task()
+        vorraum_led.cancel_update_state_task()
         logging.info('stopping the server')
         server.stop()
         logging.info('done')
@@ -193,3 +292,4 @@ if __name__ == '__main__':
         format="%(asctime)s %(filename)s:%(lineno)s %(levelname)s %(message)s"
     )
     run_server()
+
