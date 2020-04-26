@@ -21,6 +21,9 @@ gpio12 = mraa.Gpio(19)          # gpio12 PIN P19 on Linkit Smart 7688 from Relay
 gpio13.dir(mraa.DIR_OUT)        # set as OUTPUT pin
 gpio12.dir(mraa.DIR_IN)         # set as INPUT pin, its a pullup, so its High when the switch is open.
 
+gpio1 = mraa.Gpio(13)           # gpio1 PIN P13 on Linkit Smart 7688 
+gpio1.dir(mraa.DIR_IN)          # set as INPUT pin, from PIR sensor
+pin.isr(mraa.EDGE_BOTH, pir_presence, None) 
 
 r1_previous = False
 w1_device_id_list = []
@@ -39,7 +42,7 @@ def get_w1_devices():
         logging.debug('list of devices found: %s ', w1_device_id_list)
     except:
         logging.debug('get_w1_devices: no devices found')
-    
+
 
 class FadeLedStrip(Action):
 
