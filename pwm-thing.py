@@ -21,8 +21,25 @@ gpio12 = mraa.Gpio(19)          # gpio12 PIN P19 on Linkit Smart 7688 from Relay
 gpio13.dir(mraa.DIR_OUT)        # set as OUTPUT pin
 gpio12.dir(mraa.DIR_IN)         # set as INPUT pin, its a pullup, so its High when the switch is open.
 
-r1_previous = False
 
+r1_previous = False
+w1_device_id_list = []
+
+
+def get_w1_devices():
+    """
+    Sensor initializeing, get the ammount of 
+    devices connected to the w1-bus.
+    """
+    try:
+        for x in os.listdir("/sys/bus/w1/devices"):
+            if "master" in x:
+                continue
+            w1_device_id_list.append(x)
+        logging.debug('list of devices found: %s ', w1_device_id_list)
+    except:
+        logging.debug('get_w1_devices: no devices found')
+    
 
 class FadeLedStrip(Action):
 
@@ -248,11 +265,30 @@ class vorraum_node(Thing):
                      }
             )
         )
+        self.temperature = Value(0.0)
+        self.add_property(
+            Property(self,
+                     'Temperature',
+                     self.temperature,
+                     metadata={
+                         '@type': 'TemperatureProperty',
+                         'title': 'Temperature',
+                         'type': 'float',
+                         'multipleOf': 0.01,
+                         'description': 'the temperature in the case',
+                     }
+            )
+        )
         self.timer = tornado.ioloop.PeriodicCallback(
-                self.get_power,
                 3000000
+                self.get_sensors,
             )
         self.timer.start()
+
+    def get_sensors(self):
+        logging.debug('get_sensors')
+        self.get_power()
+        self.get_temperature()
 
     def get_power(self):
         try:
@@ -265,14 +301,43 @@ class vorraum_node(Thing):
         except AssertionError as e:
             logging.error(repr(e))
 
+    def get_temperature(self):
+        if len(w1_device_id_list) > 1:
+            logging.error("more than one w1 device detected")
+            return
+        if len(w1_device_id_list) < 1:
+            logging.error("no w1 device detected")
+            return
+        for device in w1_device_id_list:
+            temperature = self.get_temperature_read_one(device)
+            self.temperature.notify_of_external_update(temperature)
+        return
+
+    def get_temperature_read_one(self, temp_sensor_id):
+        try:
+            """ read 1-wire slave file from a specific device """
+            file_name = "/sys/bus/w1/devices/" + temp_sensor_id + "/w1_slave"
+            file = open(file_name)
+            filecontent = file.read()
+            file.close()
+            """ read temperature values and convert to readable float """
+            stringvalue = filecontent.split("\n")[1].split(" ")[9]
+            sensorvalue = float(stringvalue[2:]) / 1000
+            temperature = '%6.2f' % sensorvalue
+            return temperature
+        except:
+            logging.debug("get_temperature_read_one: not able to read from: %s",temp_sensor_id)
+
     def cancel_update_node_task(self):
         logging.info('stopping the node update loop task')
         self.timer.stop()
 
 def run_server():
     vorraum_led = LedStrip()
+    get_w1_devices()
     vorraum_functions = vorraum_node()
 
+    vorraum_functions.get_sensors()
     # If adding more than one thing, use MultipleThings() with a name.
     # In the single thing case, the thing's name will be broadcast.
     server = WebThingServer(MultipleThings([vorraum_led,vorraum_functions],'LightAndTempDevice'), port=8888)
