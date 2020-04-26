@@ -11,7 +11,7 @@ import os, sys
 import mraa
 
 
-pwm0 = mraa.Pwm(26)             # GPIO18 (P26) PWM0
+pwm0 = mraa.Pwm(26)             # GPIO18 (P26) PWM0 on Linkit Smart 7688
 #pwm0.period(0.001)             # as seconds in float
 pwm0.period_us(20000)           # 20ms period ==> 50Hz
 pwm0.enable(True)               # Start sending PWM signal
@@ -52,7 +52,7 @@ class FadeLedStrip(Action):
         if  brightness_after > brightness_now :
             percentage = brightness_after - brightness_now
             delay_ms = self.input['duration'] / percentage
-            logging.debug('FadeLedStrip.perform_action: start incrementing, brightness now %s, brightness afer %s, percentage %s, delay_ms %s, duration %s',
+            logging.info('FadeLedStrip.perform_action: start incrementing, brightness_now from %s to brightness_afer %s where percentage range is %s and per step of delay_ms: %s while total duration is %s',
                          brightness_now,
                          brightness_after,
                          percentage,
@@ -62,20 +62,13 @@ class FadeLedStrip(Action):
                 self.thing.set_property('brightness', 
                                         self.thing.get_property('brightness')+1)
                 time.sleep(delay_ms / 1000)
-            logging.debug('finished incrementing')
         elif brightness_after < brightness_now:
             percentage = brightness_now - brightness_after
             delay_ms = self.input['duration'] / percentage
-            logging.debug('start decrementing, brightness now %s, brightness afer %s, percentage %s, delay_ms %s, duration %s',
-                        brightness_now,
-                        brightness_after,
-                        percentage,delay_ms,
-                        self.input['duration'])
             while brightness_after < self.thing.get_property('brightness'):
                 self.thing.set_property('brightness', 
                                         self.thing.get_property('brightness')-1)
                 time.sleep(delay_ms / 1000)
-            logging.debug('FadeLedStrip.perform_action: finished decrementing')
         return
 
 class LedStrip(Thing):
@@ -93,7 +86,6 @@ class LedStrip(Thing):
         )
 
         self.state = Value(self.get_state(),self.toggle_digitalswitch)
-        logging.debug('LedStrip:digitalswitch, get_property(self): %s',self.state.last_value)
         self.add_property(
             Property(self,
                      'digitalswitch',
@@ -185,8 +177,6 @@ class LedStrip(Thing):
         global r1_previous
         r1 = self.gpio12_read()
         if r1 != r1_previous:
-            logging.debug(' ')
-            logging.debug('LedStrip.get_r1 changed: r1 %s, r1_previous %s', r1, r1_previous) 
             self.state.notify_of_external_update(self.get_state())
         r1_previous = r1
 
@@ -235,6 +225,7 @@ class vorraum_node(Thing):
                          '@type': 'InstantaneousPowerProperty',
                          'title': 'Power',
                          'type': 'float',
+                         'multipleOf': 0.01,
                          'description': 'the power used by this node',
                      }
             )
@@ -248,6 +239,7 @@ class vorraum_node(Thing):
                          '@type': 'VoltageProperty',
                          'title': 'Voltage',
                          'type': 'float',
+                         'multipleOf': 0.01,
                          'description': 'the voltage used by this node',
                      }
             )
@@ -261,6 +253,7 @@ class vorraum_node(Thing):
                          '@type': 'CurrentProperty',
                          'title': 'Current',
                          'type': 'float',
+                         'multipleOf': 0.01,
                          'description': 'the current used by this node',
                      }
             )
@@ -298,6 +291,7 @@ class vorraum_node(Thing):
             self.current.notify_of_external_update(curent / 1000)
             milliwats       = self.ina219.get_power_mW()
             self.power.notify_of_external_update(milliwats / 1000)
+            logging.debug('get_power:milliwats %s',milliwats)
         except AssertionError as e:
             logging.error(repr(e))
 
@@ -336,11 +330,13 @@ def run_server():
     vorraum_led = LedStrip()
     get_w1_devices()
     vorraum_functions = vorraum_node()
-
     vorraum_functions.get_sensors()
+    
     # If adding more than one thing, use MultipleThings() with a name.
     # In the single thing case, the thing's name will be broadcast.
-    server = WebThingServer(MultipleThings([vorraum_led,vorraum_functions],'LightAndTempDevice'), port=8888)
+    server = WebThingServer(MultipleThings([vorraum_led,
+                                            vorraum_functions],
+                                            'LightAndTempDevice'), port=8888)
     try:
         logging.info('starting the server')
         server.start()
