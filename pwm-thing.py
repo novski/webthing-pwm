@@ -5,27 +5,15 @@ import ina219
 import logging
 import random
 import time
-import tornado.ioloop
+import datetime
 import uuid
 import os, sys
 import mraa
+#from lotz for mraa interrupt traceback.
+#import traceback
+from tornado.ioloop import IOLoop, PeriodicCallback
 
-
-pwm0 = mraa.Pwm(26)             # GPIO18 (P26) PWM0 on Linkit Smart 7688
-#pwm0.period(0.001)             # as seconds in float
-pwm0.period_us(20000)           # 20ms period ==> 50Hz
-pwm0.enable(True)               # Start sending PWM signal
-
-gpio13 = mraa.Gpio(18)          # gpio13 PIN P18 on Linkit Smart 7688 to Relay2
-gpio12 = mraa.Gpio(19)          # gpio12 PIN P19 on Linkit Smart 7688 from Relay1
-gpio13.dir(mraa.DIR_OUT)        # set as OUTPUT pin
-gpio12.dir(mraa.DIR_IN)         # set as INPUT pin, its a pullup, so its High when the switch is open.
-
-gpio1 = mraa.Gpio(13)           # gpio1 PIN P13 on Linkit Smart 7688 
-gpio1.dir(mraa.DIR_IN)          # set as INPUT pin, from PIR sensor
-pin.isr(mraa.EDGE_BOTH, pir_presence, None) 
-
-r1_previous = False
+location = 'og-vorraum'
 w1_device_id_list = []
 
 
@@ -76,10 +64,10 @@ class FadeLedStrip(Action):
 
 class LedStrip(Thing):
     """A LED-Strip in the entry of my upper Level"""
-
-    def __init__(self):
-        self.id = 'urn:dev:ops:og-vorraum-vorraum-led'
-        self.name = 'LED-Strip'
+    
+    def __init__(self, location):
+        self.id = f'urn:dev:ops:{location}-vorraum-led'
+        self.name = f'{location}-LED_Strip'
         Thing.__init__(
             self,
             self.id,
@@ -87,15 +75,27 @@ class LedStrip(Thing):
             ['OnOffSwitch', 'Light'],
             'A web connected LED-Strip'
         )
+        self.pwm = mraa.Pwm(26)             # GPIO18 (P26) pwm on Linkit Smart 7688
+        self.pwm.period_us(20000)           # 20ms period ==> 50Hz
+        self.pwm.enable(True)               # Start sending PWM signal
 
+        self.relay2 = mraa.Gpio(18)          # relay2 (P18) on Linkit Smart 7688
+        self.relay1 = mraa.Gpio(19)          # relay1 (P19) on Linkit Smart 7688
+        self.relay2.dir(mraa.DIR_OUT)        # set as OUTPUT pin
+        self.relay1.dir(mraa.DIR_IN)         # set as INPUT pin, its a pullup, so its High when the switch is open.
+        self.relay1_read()                   # get initial Value of Relay1
+        self.r1_previous = False
+
+        
+        logging.debug('add property digitalswitch..')
         self.state = Value(self.get_state(),self.toggle_digitalswitch)
         self.add_property(
             Property(self,
-                     'digitalswitch',
+                     f'{self.name}-digitalswitch',
                      self.state,
                      metadata={
                          '@type': 'OnOffProperty',
-                         'title': 'LED On/Off',
+                         'title': f'{self.name}-On/Off',
                          'type': 'boolean',
                          'description': 'Whether the Strip is turned on',
                      }
@@ -104,11 +104,11 @@ class LedStrip(Thing):
 
         self.add_property(
             Property(self,
-                     'brightness',
+                     f'{self.name}-brightness',
                      Value(self.get_brightness(),self.set_brightness),
                      metadata={
                          '@type': 'BrightnessProperty',
-                         'title': 'Brightness',
+                         'title': f'{self.name}-Brightness',
                          'type': 'integer',
                          'description': 'The level of light from 0-100',
                          'minimum': 0,
@@ -120,7 +120,7 @@ class LedStrip(Thing):
 
         self.add_available_action('fade',
         {
-            'title': 'Fade',
+            'title': f'{self.name}-Fade_Action',
             'description': 'Fade the lamp to a given level',
             'input': {
                 'type': 'object',
@@ -145,7 +145,7 @@ class LedStrip(Thing):
         },
         FadeLedStrip)
 
-        self.timer = tornado.ioloop.PeriodicCallback(
+        self.timer = PeriodicCallback(
                 self.get_r1,
                 1000
             )
@@ -153,13 +153,13 @@ class LedStrip(Thing):
 
     def get_brightness(self):
         """get the level from mraa.pwm"""
-        brightness = round(pwm0.read() * 100,2)
+        brightness = round(self.pwm.read() * 100,2)
         return brightness
 
     def set_brightness(self, brightness):
         """set the level with mraa"""
         level = round((brightness/100),2)
-        pwm0.write(level)
+        self.pwm.write(level)
         on_off = self.get_property('digitalswitch')
         if brightness < 1 and on_off == True:
             self.set_property('digitalswitch', False)
@@ -167,8 +167,8 @@ class LedStrip(Thing):
             self.set_property('digitalswitch', True)
         return brightness
 
-    def gpio12_read(self):
-        r1 = bool(gpio12.read())
+    def relay1_read(self):
+        r1 = bool(self.relay1.read())
         if r1 == True:
             r1 = False
         elif r1 == False:
@@ -177,11 +177,10 @@ class LedStrip(Thing):
 
     def get_r1(self):
         """ only if footswitch changes do more """
-        global r1_previous
-        r1 = self.gpio12_read()
-        if r1 != r1_previous:
+        r1 = self.relay1_read()
+        if r1 != self.r1_previous:
             self.state.notify_of_external_update(self.get_state())
-        r1_previous = r1
+        self.r1_previous = r1
 
     def get_state(self):
         """
@@ -189,8 +188,8 @@ class LedStrip(Thing):
         with 3-ways. 
         https://en.wikipedia.org/wiki/Multiway_switching#Traveler_system
         """
-        footswitch = self.gpio12_read()          # relay 1
-        digitalswitch = bool(gpio13.read())       # relay 2
+        footswitch = self.relay1_read()          # relay 1
+        digitalswitch = bool(self.relay2.read())       # relay 2
         orb = footswitch ^ digitalswitch
         logging.debug('LedStrip.get_state: footswitch %s, digitalswitch %s, orb %s', footswitch, digitalswitch,orb)
         return orb
@@ -199,18 +198,84 @@ class LedStrip(Thing):
         """
         gateway or other GUI representaton of switch to turn on/off LedStrip.
         """
-        logging.debug('LedStrip.toggle_digitalswitch: state1 %s', state)
-        gpio13.write(not gpio13.read())
+        logging.debug('LedStrip.toggle_digitalswitch:%s',state)
+        self.relay2.write(not self.relay2.read())
 
     def cancel_update_state_task(self):
         logging.info('stopping the status update loop task')
         self.timer.stop()
 
-class vorraum_node(Thing):
+class PirSensor(Thing):
+    """ a PIR sensor implementation """
+
+    def __init__(self,location):
+        self.id = f'urn:dev:ops:{location}-pir_sensor'
+        self.name = f'{location}-pir_sensor'
+        Thing.__init__(
+            self,
+            self.id,
+            self.name,
+            ['MotionSensor'],
+            'A PIR Motion Sensor'
+        )
+        self.pir_sensor = mraa.Gpio(13)      # GPIO 1 (P13) on Linkit Smart 7688
+        self.pir_sensor.dir(mraa.DIR_IN)     # set as INPUT pin
+        self.pir_sensor.isr(mraa.EDGE_BOTH, PirSensor.pir_motion_detected, self)
+        """
+        figured out that mt7688an has onls 8 interrupts and GPIO13 and 18 get
+        triggered same time because of a electic pinmux that is not handled
+        in kernel. There might be more pin's triggering same time.
+        todo: [] check for pin's triggering simultaneously with others. 
+              [] previous, build a test breadboard.
+        """
+        self.turn_off_timeout = None
+        self.pir_timeout = 15
+
+        self.add_property(
+            Property(self,
+                     f'{self.name}-pir motion sensor',
+                     Value(self.get_motion(),self.pir_motion_detected),
+                     metadata={
+                         '@type': 'MotionProperty',
+                         'title': f'{self.name}-PIR_Motion_Sensor',
+                         'type': 'boolean',
+                         'description': 'motion=true, nomotion=false',
+                     }
+            )
+        )
+    def get_motion(self):
+        pass
+
+    def pir_motion_detected(self):
+        if not self.pir_sensor.read():
+            return
+        logging.debug(f'pir_motion_detected: value1: {self.pir_sensor.read()} at {datetime.datetime.now()}')
+        io_loop = IOLoop.current()
+        logging.debug(f'pir_motion_detected: value2: {self.pir_sensor.read()} at {datetime.datetime.now()}')
+        io_loop.add_callback(PirSensor.pir_event_waiter,self)
+        logging.debug(f'pir_motion_detected: value3: {self.pir_sensor.read()} at {datetime.datetime.now()}')
+
+    def pir_event_waiter(self):
+        logging.debug(f'pir_event_waiter:entered')
+        io_loop = IOLoop.current()
+        if self.turn_off_timeout:
+            io_loop.remove_timeout(self.turn_off_timeout)
+        self.turn_off_timeout = io_loop.call_later(self.pir_timeout, PirSensor.pir_turn_off, self)
+        logging.debug('turn light ON')
+
+    def pir_turn_off(self):
+        self.pir_timeout = None
+        logging.debug('turn light OFF')
+
+    def cancel_pir_interrupt(self):
+        self.pir_sensor.isrExit()
+
+
+class VorraumNode(Thing):
     """A node in the entry of my upper Level"""
-    def __init__(self):
-        self.id = 'urn:dev:ops:og-vorraum-vorraum-node'
-        self.name = 'node-og-vorraum'
+    def __init__(self,location):
+        self.id = f'urn:dev:ops:{location}-vorraum-node'
+        self.name = f'{location}-node_functions'
         Thing.__init__(
             self,
             self.id,
@@ -222,11 +287,11 @@ class vorraum_node(Thing):
         self.power = Value(0.0)
         self.add_property(
             Property(self,
-                     'Power',
+                     f'{self.name}-power',
                      self.power,
                      metadata={
                          '@type': 'InstantaneousPowerProperty',
-                         'title': 'Power',
+                         'title': f'{self.name}-Power',
                          'type': 'float',
                          'multipleOf': 0.01,
                          'description': 'the power used by this node',
@@ -236,11 +301,11 @@ class vorraum_node(Thing):
         self.volt = Value(0.0)
         self.add_property(
             Property(self,
-                     'Voltage',
+                     f'{self.name}-voltage',
                      self.volt,
                      metadata={
                          '@type': 'VoltageProperty',
-                         'title': 'Voltage',
+                         'title': f'{self.name}-Voltage',
                          'type': 'float',
                          'multipleOf': 0.01,
                          'description': 'the voltage used by this node',
@@ -250,11 +315,11 @@ class vorraum_node(Thing):
         self.current = Value(0.0)
         self.add_property(
             Property(self,
-                     'Current',
+                     f'{self.name}-current',
                      self.current,
                      metadata={
                          '@type': 'CurrentProperty',
-                         'title': 'Current',
+                         'title': f'{self.name}-Current',
                          'type': 'float',
                          'multipleOf': 0.01,
                          'description': 'the current used by this node',
@@ -264,20 +329,20 @@ class vorraum_node(Thing):
         self.temperature = Value(0.0)
         self.add_property(
             Property(self,
-                     'Temperature',
+                     f'{self.name}-Temperature',
                      self.temperature,
                      metadata={
                          '@type': 'TemperatureProperty',
-                         'title': 'Temperature',
+                         'title': f'{self.name}-Temperature',
                          'type': 'float',
                          'multipleOf': 0.01,
                          'description': 'the temperature in the case',
                      }
             )
         )
-        self.timer = tornado.ioloop.PeriodicCallback(
-                3000000
+        self.timer = PeriodicCallback(
                 self.get_sensors,
+                300000
             )
         self.timer.start()
 
@@ -300,15 +365,15 @@ class vorraum_node(Thing):
 
     def get_temperature(self):
         if len(w1_device_id_list) > 1:
-            logging.error("more than one w1 device detected")
+            logging.error("get_temperature:more than one w1 device detected")
             return
         if len(w1_device_id_list) < 1:
-            logging.error("no w1 device detected")
-            return
+            logging.error("get_temperature:no w1 device detected")
+            return 
         for device in w1_device_id_list:
+            logging.info("get_temperature:reading w1 device")
             temperature = self.get_temperature_read_one(device)
             self.temperature.notify_of_external_update(temperature)
-        return
 
     def get_temperature_read_one(self, temp_sensor_id):
         try:
@@ -330,21 +395,23 @@ class vorraum_node(Thing):
         self.timer.stop()
 
 def run_server():
-    vorraum_led = LedStrip()
+    led_strip = LedStrip(location)
+    pir_sensor = PirSensor(location)
     get_w1_devices()
-    vorraum_functions = vorraum_node()
-    vorraum_functions.get_sensors()
-    
+    node_functions = VorraumNode(location)
+    node_functions.get_sensors()
     # If adding more than one thing, use MultipleThings() with a name.
     # In the single thing case, the thing's name will be broadcast.
-    server = WebThingServer(MultipleThings([vorraum_led,
-                                            vorraum_functions],
-                                            'LightAndTempDevice'), port=8888)
+    server = WebThingServer(MultipleThings([led_strip,
+                                            pir_sensor,
+                                            node_functions],
+                                           'LightAndTempDevice'), port=8888)
     try:
         logging.info('starting the server')
         server.start()
     except KeyboardInterrupt:
-        vorraum_led.cancel_update_state_task()
+        led_strip.cancel_update_state_task()
+        pir_sensor.cancel_pir_interrupt()
         logging.info('stopping the server')
         server.stop()
         logging.info('done')
