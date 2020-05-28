@@ -11,7 +11,7 @@ import os, sys
 import mraa
 #from lotz for mraa interrupt traceback.
 #import traceback
-from tornado.ioloop import IOLoop, PeriodicCallback
+from tornado import ioloop
 
 location = 'og-vorraum'
 w1_device_id_list = []
@@ -27,15 +27,15 @@ def get_w1_devices():
             if "master" in x:
                 continue
             w1_device_id_list.append(x)
-        logging.debug('list of devices found: %s ', w1_device_id_list)
     except:
-        logging.debug('get_w1_devices: no devices found')
+        logging.warn('get_w1_devices: no devices found')
 
 
 class FadeLedStrip(Action):
 
     def __init__(self, thing, input_):
         Action.__init__(self, uuid.uuid4().hex, thing, 'fade', input_=input_)
+        self.thing.get_property('on')
 
     def perform_action(self):
         brightness_after = self.input['brightness']
@@ -43,7 +43,7 @@ class FadeLedStrip(Action):
         if  brightness_after > brightness_now :
             percentage = brightness_after - brightness_now
             delay_ms = self.input['duration'] / percentage
-            logging.info('FadeLedStrip.perform_action: start incrementing, brightness_now from %s to brightness_afer %s where percentage range is %s and per step of delay_ms: %s while total duration is %s',
+            logging.info('FadeLedStrip.perform_action: start incrementing, brightness_now from %s to brightness_afer %s where percentage range is %s and per step of delay_ms: %s while total duration is %s ms',
                          brightness_now,
                          brightness_after,
                          percentage,
@@ -64,7 +64,7 @@ class FadeLedStrip(Action):
 
 class LedStrip(Thing):
     """A LED-Strip in the entry of my upper Level"""
-    
+
     def __init__(self, location):
         self.id = f'urn:dev:ops:{location}-vorraum-led'
         self.name = f'{location}-LED_Strip'
@@ -86,16 +86,15 @@ class LedStrip(Thing):
         self.relay1_read()                   # get initial Value of Relay1
         self.r1_previous = False
 
-        
-        logging.debug('add property digitalswitch..')
+
         self.state = Value(self.get_state(),self.toggle_digitalswitch)
         self.add_property(
             Property(self,
-                     f'{self.name}-digitalswitch',
+                     'digitalswitch',
                      self.state,
                      metadata={
                          '@type': 'OnOffProperty',
-                         'title': f'{self.name}-On/Off',
+                         'title': f'{self.name}-digitalswitch',
                          'type': 'boolean',
                          'description': 'Whether the Strip is turned on',
                      }
@@ -104,11 +103,11 @@ class LedStrip(Thing):
 
         self.add_property(
             Property(self,
-                     f'{self.name}-brightness',
+                     'brightness',
                      Value(self.get_brightness(),self.set_brightness),
                      metadata={
                          '@type': 'BrightnessProperty',
-                         'title': f'{self.name}-Brightness',
+                         'title': f'{self.name}-brightness',
                          'type': 'integer',
                          'description': 'The level of light from 0-100',
                          'minimum': 0,
@@ -120,7 +119,7 @@ class LedStrip(Thing):
 
         self.add_available_action('fade',
         {
-            'title': f'{self.name}-Fade_Action',
+            'title': f'{self.name}-fade_action',
             'description': 'Fade the lamp to a given level',
             'input': {
                 'type': 'object',
@@ -145,7 +144,7 @@ class LedStrip(Thing):
         },
         FadeLedStrip)
 
-        self.timer = PeriodicCallback(
+        self.timer = ioloop.PeriodicCallback(
                 self.get_r1,
                 1000
             )
@@ -176,7 +175,7 @@ class LedStrip(Thing):
         return r1
 
     def get_r1(self):
-        """ only if footswitch changes do more """
+        """ only if footswitch changes """
         r1 = self.relay1_read()
         if r1 != self.r1_previous:
             self.state.notify_of_external_update(self.get_state())
@@ -188,39 +187,39 @@ class LedStrip(Thing):
         with 3-ways. 
         https://en.wikipedia.org/wiki/Multiway_switching#Traveler_system
         """
-        footswitch = self.relay1_read()          # relay 1
-        digitalswitch = bool(self.relay2.read())       # relay 2
-        orb = footswitch ^ digitalswitch
-        logging.debug('LedStrip.get_state: footswitch %s, digitalswitch %s, orb %s', footswitch, digitalswitch,orb)
-        return orb
+        footswitch = self.relay1_read()                 # relay 1
+        digitalswitch = bool(self.relay2.read())        # relay 2
+        return footswitch ^ digitalswitch
 
     def toggle_digitalswitch(self,state):
         """
         gateway or other GUI representaton of switch to turn on/off LedStrip.
         """
-        logging.debug('LedStrip.toggle_digitalswitch:%s',state)
         self.relay2.write(not self.relay2.read())
 
-    def cancel_update_state_task(self):
+    def cancel_periodic_tasks(self):
         logging.info('stopping the status update loop task')
         self.timer.stop()
 
-class PirSensor(Thing):
-    """ a PIR sensor implementation """
 
-    def __init__(self,location):
-        self.id = f'urn:dev:ops:{location}-pir_sensor'
-        self.name = f'{location}-pir_sensor'
+class MotionSensor(Thing):
+    """A PIR Sensor in the entry of my upper Level"""
+
+    def __init__(self,location,_led_strip):
+        self.id = f'urn:dev:ops:{location}-motion-sensor'
+        self.name = f'{location}-motion-sensor'
         Thing.__init__(
             self,
             self.id,
             self.name,
             ['MotionSensor'],
-            'A PIR Motion Sensor'
+            'A web connected motion sensor'
         )
+        self.main_loop = ioloop.IOLoop.current()
+        self.main_loop_time = None
         self.pir_sensor = mraa.Gpio(13)      # GPIO 1 (P13) on Linkit Smart 7688
         self.pir_sensor.dir(mraa.DIR_IN)     # set as INPUT pin
-        self.pir_sensor.isr(mraa.EDGE_BOTH, PirSensor.pir_motion_detected, self)
+        self.pir_sensor.isr(mraa.EDGE_BOTH, MotionSensor.interrupt_call, self)
         """
         figured out that mt7688an has onls 8 interrupts and GPIO13 and 18 get
         triggered same time because of a electic pinmux that is not handled
@@ -228,48 +227,88 @@ class PirSensor(Thing):
         todo: [] check for pin's triggering simultaneously with others. 
               [] previous, build a test breadboard.
         """
-        self.turn_off_timeout = None
-        self.pir_timeout = 15
+        self.timeout = None
+        self.led = _led_strip
+
+        self.motion = Value(False)
+        self.add_property(
+            Property(self,
+                'motion_detection',
+                self.motion,
+                metadata={
+                    '@type': 'MotionProperty',
+                    'title': f'{self.name}-Motion_Status',
+                    'type': 'boolean',
+                    'description': 'motion=true, nomotion=false',
+                }
+            )
+        )
 
         self.add_property(
             Property(self,
-                     f'{self.name}-pir motion sensor',
-                     Value(self.get_motion(),self.pir_motion_detected),
-                     metadata={
-                         '@type': 'MotionProperty',
-                         'title': f'{self.name}-PIR_Motion_Sensor',
-                         'type': 'boolean',
-                         'description': 'motion=true, nomotion=false',
-                     }
+                'motion_sensor_delay',
+                Value(0.5),
+                metadata={
+                    '@type': 'LevelProperty',
+                    'title': f'Motion_Sensor_Delay',
+                    'type': 'float',
+                    'description': 'The delay in minutes',
+                    'minimum': 0,
+                    'maximum': 60,
+                    'unit': 'minutes',
+                }
             )
         )
-    def get_motion(self):
-        pass
 
-    def pir_motion_detected(self):
-        if not self.pir_sensor.read():
-            return
-        logging.debug(f'pir_motion_detected: value1: {self.pir_sensor.read()} at {datetime.datetime.now()}')
-        io_loop = IOLoop.current()
-        logging.debug(f'pir_motion_detected: value2: {self.pir_sensor.read()} at {datetime.datetime.now()}')
-        io_loop.add_callback(PirSensor.pir_event_waiter,self)
-        logging.debug(f'pir_motion_detected: value3: {self.pir_sensor.read()} at {datetime.datetime.now()}')
+    #     self.test_loop = ioloop.PeriodicCallback(
+    #         self.test_loop_call,
+    #         5000
+    #     )
+    #     self.test_loop.start()
+    # def test_loop_call(self):
+    #     #logging.debug('  test_loop_call')
+    #     x = self.get_property('motion_detection')
+    #     sw = self.led.get_property('digitalswitch')
+    #     foot_sw = self.led.relay1_read()
+    #     logging.debug(f'    property:motion_detection:{x} sw:{sw} fsw:{foot_sw}')
 
-    def pir_event_waiter(self):
-        logging.debug(f'pir_event_waiter:entered')
-        io_loop = IOLoop.current()
-        if self.turn_off_timeout:
-            io_loop.remove_timeout(self.turn_off_timeout)
-        self.turn_off_timeout = io_loop.call_later(self.pir_timeout, PirSensor.pir_turn_off, self)
-        logging.debug('turn light ON')
+    """
+    Interrupt calls this when ever it triggers
+    """
+    def interrupt_call(self):
+        if self.pir_sensor.read():
+            self.set_property('motion_detection', True)
+            time.sleep(2)
+            self.main_loop.add_callback(self.interrupt_call_back)
 
-    def pir_turn_off(self):
-        self.pir_timeout = None
-        logging.debug('turn light OFF')
+    def interrupt_call_back(self):
+        if self.timeout:
+            self.main_loop.remove_timeout(self.timeout)
+        self.main_loop_time = self.main_loop.time()
+        self.get_delay_time()
+        sw = self.led.get_property('digitalswitch')
+        if not sw:
+            self.led.set_property('digitalswitch', True)#toggle_digitalswitch(True)
+        timeout = self.main_loop_time + self.delay_seconds
+        self.timeout = self.main_loop.add_timeout(timeout, self.interrupt_call_back_later)
 
-    def cancel_pir_interrupt(self):
+    def interrupt_call_back_later(self):
+        self.set_property('motion_detection', False)
+        sw = self.led.get_property('digitalswitch')
+        foot_sw = self.led.relay1_read()
+        if (sw) and (not foot_sw):
+            self.led.set_property('digitalswitch', False)
+            sw = self.led.get_property('digitalswitch')
+        self.timeout = None
+
+    def get_delay_time(self):
+        self.delay_minutes = self.get_property('motion_sensor_delay')
+        self.delay_seconds = self.delay_minutes * 60
+
+    def cancel_interrupt(self):
+        logging.info('stopping the interrupt')
         self.pir_sensor.isrExit()
-
+        self.test_loop.stop()
 
 class VorraumNode(Thing):
     """A node in the entry of my upper Level"""
@@ -340,14 +379,13 @@ class VorraumNode(Thing):
                      }
             )
         )
-        self.timer = PeriodicCallback(
+        self.timer = ioloop.PeriodicCallback(
                 self.get_sensors,
                 300000
             )
         self.timer.start()
 
     def get_sensors(self):
-        logging.debug('get_sensors')
         self.get_power()
         self.get_temperature()
 
@@ -359,7 +397,6 @@ class VorraumNode(Thing):
             self.current.notify_of_external_update(curent / 1000)
             milliwats       = self.ina219.get_power_mW()
             self.power.notify_of_external_update(milliwats / 1000)
-            logging.debug('get_power:milliwats %s',milliwats)
         except AssertionError as e:
             logging.error(repr(e))
 
@@ -388,7 +425,7 @@ class VorraumNode(Thing):
             temperature = '%6.2f' % sensorvalue
             return temperature
         except:
-            logging.debug("get_temperature_read_one: not able to read from: %s",temp_sensor_id)
+            logging.warn("get_temperature_read_one: not able to read from: %s",temp_sensor_id)
 
     def cancel_update_node_task(self):
         logging.info('stopping the node update loop task')
@@ -396,22 +433,23 @@ class VorraumNode(Thing):
 
 def run_server():
     led_strip = LedStrip(location)
-    pir_sensor = PirSensor(location)
+    motion_detection = MotionSensor(location,led_strip)
     get_w1_devices()
     node_functions = VorraumNode(location)
     node_functions.get_sensors()
     # If adding more than one thing, use MultipleThings() with a name.
     # In the single thing case, the thing's name will be broadcast.
     server = WebThingServer(MultipleThings([led_strip,
-                                            pir_sensor,
+                                            motion_detection,
                                             node_functions],
                                            'LightAndTempDevice'), port=8888)
     try:
         logging.info('starting the server')
         server.start()
     except KeyboardInterrupt:
-        led_strip.cancel_update_state_task()
-        pir_sensor.cancel_pir_interrupt()
+        led_strip.cancel_periodic_tasks()
+        motion_detection.cancel_interrupt()
+        node_functions.cancel_update_node_task()
         logging.info('stopping the server')
         server.stop()
         logging.info('done')
