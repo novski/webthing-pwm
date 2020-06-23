@@ -104,6 +104,9 @@ class LedStrip(Thing):
         self.main_loop_time = None
         self.timeout = None
 
+        self.day_time_start = datetime.datetime(2020,6,20,8,00,00,000000).time()
+        self.day_time_stop = datetime.datetime(2020,6,20,20,00,00,000000).time()
+
         self.state = Value(self.get_state(),self.toggle_digitalswitch)
         self.add_property(
             Property(self,
@@ -249,11 +252,18 @@ class LedStrip(Thing):
         Interrupt calls this when ever it triggers """
 
     def motion(self):
-        if self.motion_on_off:
-            self.main_loop.add_callback(self.interrupt_call_back)
+        time = datetime.datetime.now()
+        start = self.day_time_start
+        end = self.day_time_stop
+        if time < start or time > end:
+            day_time = True
+        else:
+            day_time = False
+        if not day_time:
+            if self.motion_on_off:
+                self.main_loop.add_callback(self.interrupt_call_back)
 
     def interrupt_call_back(self):
-        print("21")
         if self.timeout:
             self.main_loop.remove_timeout(self.timeout)
         self.main_loop_time = self.main_loop.time()
@@ -265,7 +275,6 @@ class LedStrip(Thing):
         self.timeout = self.main_loop.add_timeout(timeout, self.interrupt_call_timeout)
 
     def interrupt_call_timeout(self):
-        print("22")
         sw = self.get_property('digitalswitch')
         foot_sw = self.relay1_read()
         if (sw) and (not foot_sw):
@@ -337,27 +346,22 @@ class MotionSensor(Thing):
     def interrupt_call(self):
         if self.motion_sensor.read():
             logging.debug("motion_sensor detected motion")
-            print("1")
             if not self.interrupt_blocker:
                 self.interrupt_blocker = True
                 self.set_property('motion_detection', True)
                 self.led_strip.motion()
                 self.set_property('motion_detection', False)
-                print("21")
                 pass
-            print("11")
             self.main_loop.add_callback(self.interrupt_block_call_back)
 
             
     def interrupt_block_call_back(self):
-        print("12")
         self.blocker_seconds = 2
         self.main_loop.call_later(self.blocker_seconds,
                                   self.interrupt_block_call_deblock)
 
     def interrupt_block_call_deblock(self):
         self.interrupt_blocker = False
-        print("13")
 
     """ END OF MOTION SENSOE THING """
     def cancel_motion_sensor_async_tasks(self):
