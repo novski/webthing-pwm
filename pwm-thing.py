@@ -255,7 +255,7 @@ class LedStrip(Thing):
         time = datetime.datetime.now()
         start = self.day_time_start
         end = self.day_time_stop
-        if time < start or time > end:
+        if time > start or time < end:
             day_time = True
         else:
             day_time = False
