@@ -11,8 +11,7 @@ import sys
 from datetime import datetime, timedelta
 import mraa
 import ina219
-import pdb
-import threading
+from astral import LocationInfo, sun
 
 
 class FadeLedStrip(Action):
@@ -82,8 +81,19 @@ class LedStrip(Thing):
         self.main_loop_time = None
         self.async_timeout = None
 
-        self.day_time_start = datetime(2020, 6, 20, 8, 00, 00, 000000).time()
-        self.day_time_stop = datetime(2020, 6, 20, 11, 00, 00, 000000).time()
+        self.locality = LocationInfo('Zürich', 'Switzerland', 'Europe/Zurich',47.39, 8.07)
+        logging.info(
+            f'Information for {self.locality.name}/{self.locality.region}, '
+            f'Timezone: {self.locality.timezone}, '
+            f'Latitude: {self.locality.latitude:.02f}; '
+            f'Longitude: {self.locality.longitude:.02f}'
+        )
+        self.day_time_start = sun.sunrise(self.locality.observer, date=datetime.now(), tzinfo=self.locality.timezone)
+        logging.debug(f'LedStrip: day_time_start:{self.day_time_start}')
+        #datetime(2020, 6, 20, 8, 00, 00, 000000).time()
+        self.day_time_stop = sun.sunset(self.locality.observer, date=datetime.now(), tzinfo=self.locality.timezone)
+        #datetime(2020, 6, 20, 18, 00, 00, 000000).time()
+        logging.debug(f'LedStrip: day_time_stop:{self.day_time_stop}')
 
         self.state = Value(self.get_state(), self.toggle_digitalswitch)
         self.add_property(
@@ -206,7 +216,7 @@ class LedStrip(Thing):
             self.set_property('digitalswitch', False)
         elif self.brightness >= 1 and self.on_off == False:
             self.set_property('digitalswitch', True)
-        logging.info(f'Set Brightness to {self.brightness}')
+        logging.info(f'LedStrip: Set Brightness to {self.brightness}')
         return self.brightness
 
     def relay1_read(self):
@@ -242,61 +252,61 @@ class LedStrip(Thing):
 
     def motion(self):
         """ MOTION SENSOR calls this when ever it triggers """
-        logging.debug('Motion called')
+        logging.debug('LedStrip: Motion called')
         self.date_time_now = datetime.now().time()
-        logging.debug(f'Motion called self.date_time_now:{self.date_time_now}')
-        self.start = self.day_time_start
-        logging.debug(f'Motion called self.start:{self.start}')
-        self.end = self.day_time_stop
-        logging.debug(f'Motion called self.end:{self.end}')
+        logging.debug(f'LedStrip: Motion called self.date_time_now:{self.date_time_now}')
+        self.start = self.day_time_start.time()
+        logging.debug(f'LedStrip: Motion called self.start:{self.start}')
+        self.end = self.day_time_stop.time()
+        logging.debug(f'LedStrip: Motion called self.end:{self.end}')
         if self.date_time_now > self.start and self.date_time_now < self.end:
             self.day_time = True
-            logging.debug('Motion called during the Day')
+            logging.debug('LedStrip: Motion called during the Day')
         else:
             self.day_time = False
-            logging.debug('Motion called in the Night')
+            logging.debug('LedStrip: Motion called in the Night')
         if not self.day_time:
-            logging.debug('Motion called on not day_time')
+            logging.debug('LedStrip: Motion called on not day_time')
             if self.motion_on_off:
                 logging.debug(
-                    'Motion called on not day_time and Motion was activated, add_callback fires now')
+                    'LedStrip: motion_on_off called on not day_time and Motion was activated, add_callback fires now')
                 self.main_loop.add_callback(self.interrupt_call_back)
 
     def interrupt_call_back(self):
         logging.info(
-            f'interrupt_call_back called, async_timeout:{self.async_timeout}')
+            f'LedStrip: interrupt_call_back called, async_timeout:{self.async_timeout}')
         if self.async_timeout:
             logging.debug(
-                f'timeout was present, async_timeout:{self.async_timeout}')
+                f'LedStrip: timeout was present, async_timeout:{self.async_timeout}')
             self.main_loop.remove_timeout(self.async_timeout)
             logging.debug(
-                f'timeout was removed, async_timeout:{self.async_timeout}')
+                f'LedStrip: timeout was removed, async_timeout:{self.async_timeout}')
         self.main_loop_time = self.main_loop.time()
         self.delay_time = self.get_delay_time()
         self.sw = self.get_property('digitalswitch')
         if not self.sw:
-            logging.debug('digitalswitch was OFF light now turns ON')
+            logging.debug('LedStrip: digitalswitch was OFF light now turns ON')
             self.set_property('digitalswitch', True)
         self.timeout_delta = self.main_loop_time + self.delay_time
         self.timeout_delta_human = time.strftime(
             '%H:%M:%S', time.gmtime(self.timeout_delta))
         logging.debug(
-            f'Light will turn OFF at: {self.timeout_delta}, or readable: {self.timeout_delta_human}')
+            f'LedStrip: Light will turn OFF at: {self.timeout_delta}, or readable: {self.timeout_delta_human}')
         self.async_timeout = self.main_loop.add_timeout(
             self.timeout_delta, self.interrupt_call_timeout)
 
     def interrupt_call_timeout(self):
-        logging.info('interrupt_call_timeout called')
+        logging.info('LedStrip: interrupt_call_timeout called')
         self.swi = self.get_property('digitalswitch')
         self.foot_swi = self.relay1_read()
         if (self.swi) and (not self.foot_swi):
             self.set_property('digitalswitch', False)
             self.swi = self.get_property('digitalswitch')
         logging.info(
-            f'interrupt_call_timeout async_timeout: {self.async_timeout}')
+            f'LedStrip: interrupt_call_timeout async_timeout: {self.async_timeout}')
         self.main_loop.remove_timeout(self.async_timeout)
         logging.info(
-            f'interrupt_call_timeout async_timeout removed: {self.async_timeout}')
+            f'LedStrip: interrupt_call_timeout async_timeout removed: {self.async_timeout}')
         self.async_timeout = False
 
     def get_delay_time(self):
@@ -305,22 +315,22 @@ class LedStrip(Thing):
         return self.delay_seconds
 
     def get_motion(self):
-        logging.debug("get_motion_follower")
+        logging.debug('LedStrip: get_motion_follower')
         if self.get_property('motion_detection_follower') is None:
-            logging.debug("get_motion_follower is None")
+            logging.debug('LedStrip: get_motion_follower is None')
             self.set_property('motion_detection_follower', False)
         return
 
     def set_motion(self, value):
-        logging.debug(f'set_motion_follower (LedStrip): {value}')
+        logging.debug(f'LedStrip: set_motion_follower (LedStrip): {value}')
         self.motion()
-        logging.debug(f'set_motion_follower (LedStrip): {value}')
+        logging.debug(f'LedStrip: set_motion_follower (LedStrip): {value}')
         return
 
     """ END OF LED STRIP THING """
 
     def cancel_led_strip_async_tasks(self):
-        logging.info('stopping the status update loop task')
+        logging.info('LedStrip: stopping the status update loop task')
         self.timer.stop()
 
 
@@ -346,9 +356,9 @@ class MotionSensor(Thing):
         """ MOTION SENSOR PIN DEFINITION """
         self.motion_sensor = mraa.Gpio(13)  # GPIO 1 (P13) on Linkit Smart 7688
         self.motion_sensor.dir(mraa.DIR_IN) # set as INPUT pin
-        self.motion_sensor.isr(
-            mraa.EDGE_RISING, MotionSensor.interrupt_call, self)
-        self.motion_sensor.isr(mraa.EDGE_FALLING, MotionSensor.timeout, self)
+        # self.motion_sensor.isr(
+        #     mraa.EDGE_RISING, MotionSensor.interrupt_call, self)
+        # self.motion_sensor.isr(mraa.EDGE_FALLING, MotionSensor.timeout, self)
         """
         I figured out that mt7688an has onls 8 interrupts and GPIO13 and 18 get
         triggered same time because of a electic pinmux that is not handled
@@ -373,56 +383,51 @@ class MotionSensor(Thing):
                      }
                      )
         )
+        self.timer = tornado.ioloop.PeriodicCallback(
+            self.interrupt_call,
+            250
+        )
+        self.timer.start()
 
     def get_motion(self):
-        logging.debug('get_motion')
+        logging.debug('MotionSensor: get_motion')
         if self.get_property('motion_detection') is None:
-            logging.debug("get_motion is None")
+            logging.debug("MotionSensor: get_motion is None")
             self.set_property('motion_detection', False)
-        logging.debug(f'currently {threading.enumerate()} '
-            f'are active while {threading.activeCount() } are active '
-            f'and we are in {threading.currentThread()}')
 
     def set_motion(self, value):
-        logging.debug(f'set_motion: {value}')
+        logging.debug(f'MotionSensor: set_motion: {value}')
 
     def interrupt_call(self):
-        logging.debug(f'currently {threading.enumerate()} '
-            f'are active while {threading.activeCount() } are active '
-            f'and we are in {threading.currentThread()}')
-        sys.exit()
-        sys.exit()
-        logging.debug(f'currently {threading.enumerate()} '
-            f'are active while {threading.activeCount() } are active '
-            f'and we are in {threading.currentThread()}')
-        logging.debug('interrupt_call')
         if self.motion_sensor.read():
-            logging.debug('interrupt_call read True')
-            self.set_property('motion_detection', True)
-            self.led_strip.set_property('motion_detection_follower', True)
-            logging.debug('interrupt_call back')
-            self.main_loop_time = self.main_loop.time()
-            self.n = time.strftime(
-                '%H:%M:%S', time.gmtime(self.main_loop_time))
-            logging.debug(
-                f'main_loop_time at {self.main_loop_time} or {self.n}')
-            self.delay_in_sec = 4
-            logging.debug(f'delay_in_sec: {self.delay_in_sec}')
-            self.time_when_off = self.main_loop_time + self.delay_in_sec
-            logging.debug(f'time_when_off at {self.time_when_off}')
-            self.t = time.strftime('%H:%M:%S', time.gmtime(self.time_when_off))
-            logging.debug(f'timeout at {self.t}')
-            self.main_loop.add_timeout(self.time_when_off, self.timeout)
+            if not self.get_property('motion_detection'):
+                logging.debug('MotionSensor: interrupt_call INPUT is triggerd and Motion is False')
+                self.set_property('motion_detection', True)
+                self.led_strip.set_property('motion_detection_follower', True)
+                logging.debug('MotionSensor: interrupt_call back')
+                self.main_loop_time = self.main_loop.time()
+                self.n = time.strftime(
+                    '%H:%M:%S', time.gmtime(self.main_loop_time))
+                logging.debug(
+                    f'MotionSensor: main_loop_time at {self.main_loop_time} or {self.n}')
+                self.delay_in_sec = 4
+                logging.debug(f'MotionSensor: delay_in_sec: {self.delay_in_sec}')
+                self.time_when_off = self.main_loop_time + self.delay_in_sec
+                logging.debug(f'MotionSensor: time_when_off at {self.time_when_off}')
+                self.t = time.strftime('%H:%M:%S', time.gmtime(self.time_when_off))
+                logging.debug(f'MotionSensor: timeout at {self.t}')
+                #self.main_loop.remove_timeout()
+                self.main_loop.add_timeout(self.time_when_off, self.timeout)
 
     def timeout(self):
-        logging.debug('motion sensor interrupt Falling edge or timeout')
+        logging.debug('MotionSensor: motion sensor interrupt Falling edge or timeout')
         self.set_property('motion_detection', False)
         self.led_strip.set_property('motion_detection_follower', False)
 
     """ END OF MOTION SENSOR THING """
 
     def cancel_motion_sensor_async_tasks(self):
-        logging.info('stopping the interrupt')
+        logging.info('MotionSensor: stopping the interrupt')
         self.motion_sensor.isrExit()
 
 
