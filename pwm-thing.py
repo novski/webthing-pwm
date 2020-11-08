@@ -1,88 +1,62 @@
 from __future__ import division, print_function
 from webthing import (Action, Event, Property, MultipleThings, Thing, Value,
                       WebThingServer)
-import ina219
 import logging
 import random
 import time
-import datetime
+import tornado.ioloop
 import uuid
-import os, sys
+import os
+import sys
+from datetime import datetime, timedelta
 import mraa
-from astral import LocationInfo
-from astral.sun import sun
-from tornado import ioloop
-city = LocationInfo("Zürich", "Switzerland", "Europe/Zurich", 47.4, 8.5)
-currDate = datetime.datetime.now()
-s = sun(city.observer, date=datetime.date(2020, 6, 6))
-print((
-    f'now:     {currDate}\n'
-    f'Dawn:    {s["dawn"]}\n'
-    f'Sunrise: {s["sunrise"]}\n'
-    f'Noon:    {s["noon"]}\n'
-    f'Sunset:  {s["sunset"]}\n'
-    f'Dusk:    {s["dusk"]}\n'
-))
-location = 'og-vorraum'
-w1_device_id_list = []
+import ina219
+import pdb
+import threading
 
-location = 'og-vorraum'
-w1_device_id_list = []
-
-def get_w1_devices():
-    """
-    Sensor initializeing, get the ammount of 
-    devices connected to the w1-bus.
-    """
-    try:
-        for x in os.listdir("/sys/bus/w1/devices"):
-            if "master" in x:
-                continue
-            w1_device_id_list.append(x)
-    except:
-        logging.warn('get_w1_devices: no devices found')
-
-def get_main_loop():
-    return ioloop.IOLoop.current()
 
 class FadeLedStrip(Action):
 
     def __init__(self, thing, input_):
         Action.__init__(self, uuid.uuid4().hex, thing, 'fade', input_=input_)
-        self.thing.get_property('on')
+        self.thing.get_property('on')  # TODO: check if needed.
 
     def perform_action(self):
-        brightness_after = self.input['brightness']
-        brightness_now = self.thing.get_property('brightness')
-        if  brightness_after > brightness_now :
-            percentage = brightness_after - brightness_now
-            delay_ms = self.input['duration'] / percentage
-            logging.info('FadeLedStrip.perform_action: start incrementing, brightness_now from %s to brightness_afer %s where percentage range is %s and per step of delay_ms: %s while total duration is %s ms',
-                         brightness_now,
-                         brightness_after,
-                         percentage,
-                         delay_ms,
-                         self.input['duration'])
-            while brightness_after > self.thing.get_property('brightness'):
-                self.thing.set_property('brightness', 
+        self.brightness_after = self.input['brightness']
+        self.duration = self.input['duration']
+        self.brightness_now = self.thing.get_property('brightness')
+        if self.brightness_after > self.brightness_now:
+            self.percentage = self.brightness_after - self.brightness_now
+            self.delay_ms = self.duration / self.percentage
+            logging.info(f'FadeLedStrip.perform_action: start incrementing,'
+                         'brightness_now from {self.brightness_now} '
+                         'to brightness_afer {self.brightness_after} '
+                         'where percentage range is {self.percentage} '
+                         'and per step of delay_ms: {self.delay_ms} '
+                         'while total duration is {self.duration} ms'
+                         )
+            while self.brightness_after > self.thing.get_property('brightness'):
+                self.thing.set_property('brightness',
                                         self.thing.get_property('brightness')+1)
-                time.sleep(delay_ms / 1000)
-        elif brightness_after < brightness_now:
-            percentage = brightness_now - brightness_after
-            delay_ms = self.input['duration'] / percentage
-            while brightness_after < self.thing.get_property('brightness'):
-                self.thing.set_property('brightness', 
+                time.sleep(self.delay_ms / 1000)
+        elif self.brightness_after < self.brightness_now:
+            self.percentage = self.brightness_now - self.brightness_after
+            self.delay_ms = self.duration / self.percentage
+            while self.brightness_after < self.thing.get_property('brightness'):
+                self.thing.set_property('brightness',
                                         self.thing.get_property('brightness')-1)
-                time.sleep(delay_ms / 1000)
+                time.sleep(self.delay_ms / 1000)
         return
+
 
 class LedStrip(Thing):
     """A LED-Strip in the entry of my upper Level"""
 
-    def __init__(self, location, _main_loop):
+    def __init__(self, _location, _main_loop):
+        self.location = _location
         self.main_loop = _main_loop
-        self.id = f'urn:dev:ops:{location}-vorraum-led'
-        self.name = f'{location}-LED_Strip'
+        self.id = f'urn:dev:ops:{self.location}-vorraum-led'
+        self.name = f'{self.location}-LED_Strip'
         Thing.__init__(
             self,
             self.id,
@@ -90,24 +64,28 @@ class LedStrip(Thing):
             ['OnOffSwitch', 'Light'],
             'A web connected LED-Strip'
         )
-        self.pwm = mraa.Pwm(26)             # GPIO18 (P26) pwm on Linkit Smart 7688
+        # GPIO18 (P26) pwm on Linkit Smart 7688
+        self.pwm = mraa.Pwm(26)
         self.pwm.period_us(20000)           # 20ms period ==> 50Hz
         self.pwm.enable(True)               # Start sending PWM signal
 
-        self.relay2 = mraa.Gpio(18)          # relay2 (P18) on Linkit Smart 7688
-        self.relay1 = mraa.Gpio(19)          # relay1 (P19) on Linkit Smart 7688
+        # relay2 (P18) on Linkit Smart 7688
+        self.relay2 = mraa.Gpio(18)
+        # relay1 (P19) on Linkit Smart 7688
+        self.relay1 = mraa.Gpio(19)
         self.relay2.dir(mraa.DIR_OUT)        # set as OUTPUT pin
-        self.relay1.dir(mraa.DIR_IN)         # set as INPUT pin, its a pullup, so its High when the switch is open.
+        # set as INPUT pin, its a pullup, so its High when the switch is open.
+        self.relay1.dir(mraa.DIR_IN)
         self.relay1_read()                   # get initial Value of Relay1
         self.r1_previous = False
-        
+
         self.main_loop_time = None
-        self.timeout = None
+        self.async_timeout = None
 
-        self.day_time_start = datetime.datetime(2020,6,20,8,00,00,000000).time()
-        self.day_time_stop = datetime.datetime(2020,6,20,20,00,00,000000).time()
+        self.day_time_start = datetime(2020, 6, 20, 8, 00, 00, 000000).time()
+        self.day_time_stop = datetime(2020, 6, 20, 11, 00, 00, 000000).time()
 
-        self.state = Value(self.get_state(),self.toggle_digitalswitch)
+        self.state = Value(self.get_state(), self.toggle_digitalswitch)
         self.add_property(
             Property(self,
                      'digitalswitch',
@@ -118,119 +96,133 @@ class LedStrip(Thing):
                          'type': 'boolean',
                          'description': 'Whether the Strip is turned on',
                      }
-            )
+                     )
         )
 
         self.add_property(
             Property(self,
                      'brightness',
-                     Value(self.get_brightness(),self.set_brightness),
+                     Value(self.get_brightness(), self.set_brightness),
                      metadata={
                          '@type': 'BrightnessProperty',
-                         'title': f'{self.name}-brightness',
+                         'title': 'Helligkeit',
                          'type': 'integer',
                          'description': 'The level of light from 0-100',
                          'minimum': 0,
                          'maximum': 100,
                          'unit': 'percent',
                      }
-            )
+                     )
         )
 
         self.add_available_action('fade',
-        {
-            'title': f'{self.name}-fade_action',
-            'description': 'Fade the lamp to a given level',
-            'input': {
-                'type': 'object',
-                'required': [
-                    'brightness',
-                    'duration',
-                ],
-                'properties': {
-                    'brightness': {
-                        'type': 'integer',
-                        'minimum': 0,
-                        'maximum': 100,
-                        'unit': 'percent',
-                    },
-                    'duration': {
-                        'type': 'integer',
-                        'minimum': 1,
-                        'unit': 'milliseconds',
-                    },
-                },
-            },
-        },
-        FadeLedStrip)
+                                  {
+                                      'title': 'Helligkeitswert über eine Zeitdauer einstellen',
+                                      'description': 'Fade the lamp to a given level',
+                                      'input': {
+                                          'type': 'object',
+                                          'required': [
+                                              'brightness',
+                                              'duration',
+                                          ],
+                                          'properties': {
+                                              'brightness': {
+                                                  'type': 'integer',
+                                                  'minimum': 0,
+                                                  'maximum': 100,
+                                                  'unit': 'percent',
+                                              },
+                                              'duration': {
+                                                  'type': 'integer',
+                                                  'minimum': 1,
+                                                  'unit': 'milliseconds',
+                                              },
+                                          },
+                                      },
+                                  },
+                                  FadeLedStrip)
 
+        self.delay_minutes = Value(3)
         self.add_property(
             Property(self,
-                'motion_sensor_delay',
-                Value(5),
-                metadata={
-                    '@type': 'LevelProperty',
-                    'title': f'Motion_Sensor_Delay',
-                    'type': 'float',
-                    'description': 'The delay in minutes',
-                    'minimum': 0,
-                    'maximum': 60,
-                    'unit': 'minutes',
-                }
-            )
+                     'motion_sensor_delay',
+                     self.delay_minutes,
+                     metadata={
+                         '@type': 'LevelProperty',
+                         'title': 'Verzögertes Aus bei Bewegung (in Minuten)',
+                         'type': 'integer',
+                         'description': 'The delay in minutes',
+                         'minimum': 0,
+                         'maximum': 20,
+                         'unit': 'minutes',
+                     }
+                     )
         )
 
         self.motion_on_off = Value(True)
         self.add_property(
             Property(self,
-                     'motion_on_off',
+                     'Motiondetection-Active',
                      self.motion_on_off,
                      metadata={
-                         '@type': 'OnOffProperty',
-                         'title': f'{self.name}-motion_on_off',
+                         '@type': 'BooleanProperty',
+                         'title': 'Auf Bewegung reagieren?',
                          'type': 'boolean',
-                         'description': 'Whether the motion sensor is active',
+                         'description': 'Whether the motion sensor is active or not',
                      }
-            )
+                     )
         )
 
-        self.timer = ioloop.PeriodicCallback(
-                self.get_r1,
-                1000
-            )
+        self.add_property(
+            Property(self,
+                     'motion_detection_follower',
+                     Value(self.get_motion(), self.set_motion),
+                     metadata={
+                         '@type': 'MotionProperty',
+                         'title': 'Bewegungs Sensor',
+                         'type': 'boolean',
+                         'description': 'motion=true, nomotion=false',
+                     }
+                     )
+        )
+
+        self.timer = tornado.ioloop.PeriodicCallback(
+            self.get_r1,
+            1000
+        )
         self.timer.start()
-    
-    """ PWM """
+
     def get_brightness(self):
         """get the level from mraa.pwm"""
-        brightness = round(self.pwm.read() * 100,2)
-        return brightness
+        self.brightness = round(self.pwm.read() * 100, 2)
+        return self.brightness
 
     def set_brightness(self, brightness):
         """set the level with mraa"""
-        level = round((brightness/100),2)
-        self.pwm.write(level)
-        on_off = self.get_property('digitalswitch')
-        if brightness < 1 and on_off == True:
+        self.level = round((brightness/100), 2)
+        self.pwm.write(self.level)
+        self.on_off = self.get_property('digitalswitch')
+        if self.brightness < 1 and self.on_off == True:
             self.set_property('digitalswitch', False)
-        elif brightness> 1 and on_off == False: 
+        elif self.brightness >= 1 and self.on_off == False:
             self.set_property('digitalswitch', True)
-        return brightness
+        logging.info(f'Set Brightness to {self.brightness}')
+        return self.brightness
 
     def relay1_read(self):
-        r1 = bool(self.relay1.read())
-        if r1 == True:
-            r1 = False
-        elif r1 == False:
-            r1 = True
-        return r1
+        self.relay1_value = bool(self.relay1.read())
+        if self.relay1_value == True:
+            self.relay1_value = False
+        elif self.relay1_value == False:
+            self.relay1_value = True
+        return self.relay1_value
 
     def get_r1(self):
         """ only if footswitch changes """
-        r1 = self.relay1_read()
-        if r1 != self.r1_previous:
+        self.r1 = self.relay1_read()
+        if self.r1 != self.r1_previous:
             self.state.notify_of_external_update(self.get_state())
-        self.r1_previous = r1
+        self.r1_previous = self.r1
 
     def get_state(self):
         """
@@ -238,55 +230,95 @@ class LedStrip(Thing):
         with 3-ways. 
         https://en.wikipedia.org/wiki/Multiway_switching#Traveler_system
         """
-        footswitch = self.relay1_read()                 # relay 1
-        digitalswitch = bool(self.relay2.read())        # relay 2
-        return footswitch ^ digitalswitch
+        self.footswitch = bool(self.relay1_read())                 # relay 1
+        self.digitalswitch = bool(self.relay2.read())        # relay 2
+        return self.footswitch ^ self.digitalswitch
 
-    def toggle_digitalswitch(self,state):
+    def toggle_digitalswitch(self, state):
         """
-        gateway or other GUI representaton of switch to turn on/off LedStrip.
+        switch to turn on/off LedStrip.
         """
         self.relay2.write(not self.relay2.read())
 
-    """ MOTION SENSOR 
-        Interrupt calls this when ever it triggers """
-
     def motion(self):
-        time = datetime.datetime.now()
-        start = self.day_time_start
-        end = self.day_time_stop
-        if time > start or time < end:
-            day_time = True
+        """ MOTION SENSOR calls this when ever it triggers """
+        logging.debug('Motion called')
+        self.date_time_now = datetime.now().time()
+        logging.debug(f'Motion called self.date_time_now:{self.date_time_now}')
+        self.start = self.day_time_start
+        logging.debug(f'Motion called self.start:{self.start}')
+        self.end = self.day_time_stop
+        logging.debug(f'Motion called self.end:{self.end}')
+        if self.date_time_now > self.start and self.date_time_now < self.end:
+            self.day_time = True
+            logging.debug('Motion called during the Day')
         else:
-            day_time = False
-        if not day_time:
+            self.day_time = False
+            logging.debug('Motion called in the Night')
+        if not self.day_time:
+            logging.debug('Motion called on not day_time')
             if self.motion_on_off:
+                logging.debug(
+                    'Motion called on not day_time and Motion was activated, add_callback fires now')
                 self.main_loop.add_callback(self.interrupt_call_back)
 
     def interrupt_call_back(self):
-        if self.timeout:
-            self.main_loop.remove_timeout(self.timeout)
+        logging.info(
+            f'interrupt_call_back called, async_timeout:{self.async_timeout}')
+        if self.async_timeout:
+            logging.debug(
+                f'timeout was present, async_timeout:{self.async_timeout}')
+            self.main_loop.remove_timeout(self.async_timeout)
+            logging.debug(
+                f'timeout was removed, async_timeout:{self.async_timeout}')
         self.main_loop_time = self.main_loop.time()
-        self.get_delay_time()
-        sw = self.get_property('digitalswitch')
-        if not sw:
+        self.delay_time = self.get_delay_time()
+        self.sw = self.get_property('digitalswitch')
+        if not self.sw:
+            logging.debug('digitalswitch was OFF light now turns ON')
             self.set_property('digitalswitch', True)
-        timeout = self.main_loop_time + self.delay_seconds
-        self.timeout = self.main_loop.add_timeout(timeout, self.interrupt_call_timeout)
+        self.timeout_delta = self.main_loop_time + self.delay_time
+        self.timeout_delta_human = time.strftime(
+            '%H:%M:%S', time.gmtime(self.timeout_delta))
+        logging.debug(
+            f'Light will turn OFF at: {self.timeout_delta}, or readable: {self.timeout_delta_human}')
+        self.async_timeout = self.main_loop.add_timeout(
+            self.timeout_delta, self.interrupt_call_timeout)
 
     def interrupt_call_timeout(self):
-        sw = self.get_property('digitalswitch')
-        foot_sw = self.relay1_read()
-        if (sw) and (not foot_sw):
+        logging.info('interrupt_call_timeout called')
+        self.swi = self.get_property('digitalswitch')
+        self.foot_swi = self.relay1_read()
+        if (self.swi) and (not self.foot_swi):
             self.set_property('digitalswitch', False)
-            sw = self.get_property('digitalswitch')
-        self.timeout = None
+            self.swi = self.get_property('digitalswitch')
+        logging.info(
+            f'interrupt_call_timeout async_timeout: {self.async_timeout}')
+        self.main_loop.remove_timeout(self.async_timeout)
+        logging.info(
+            f'interrupt_call_timeout async_timeout removed: {self.async_timeout}')
+        self.async_timeout = False
 
     def get_delay_time(self):
         self.delay_minutes = self.get_property('motion_sensor_delay')
         self.delay_seconds = self.delay_minutes * 60
+        return self.delay_seconds
+
+    def get_motion(self):
+        logging.debug("get_motion_follower")
+        if self.get_property('motion_detection_follower') is None:
+            logging.debug("get_motion_follower is None")
+            self.set_property('motion_detection_follower', False)
+        return
+
+    def set_motion(self, value):
+        logging.debug(f'set_motion_follower (LedStrip): {value}')
+        self.motion()
+        logging.debug(f'set_motion_follower (LedStrip): {value}')
+        return
 
     """ END OF LED STRIP THING """
+
     def cancel_led_strip_async_tasks(self):
         logging.info('stopping the status update loop task')
         self.timer.stop()
@@ -295,11 +327,15 @@ class LedStrip(Thing):
 class MotionSensor(Thing):
     """A PIR Sensor in the entry of my upper Level"""
 
-    def __init__(self,location, _main_loop, _led_strip):
+    def __init__(self, _location,
+                 _main_loop,
+                 _led_strip
+                 ):
+        self.location = _location
         self.main_loop = _main_loop
         self.led_strip = _led_strip
-        self.id = f'urn:dev:ops:{location}-motion-sensor'
-        self.name = f'{location}-motion-sensor'
+        self.id = f'urn:dev:ops:{self.location}-motion-sensor'
+        self.name = f'{self.location}-motion-sensor'
         Thing.__init__(
             self,
             self.id,
@@ -308,71 +344,96 @@ class MotionSensor(Thing):
             'A web connected motion sensor'
         )
         """ MOTION SENSOR PIN DEFINITION """
-        self.motion_sensor = mraa.Gpio(13)      # GPIO 1 (P13) on Linkit Smart 7688
-        self.motion_sensor.dir(mraa.DIR_IN)     # set as INPUT pin
-        self.motion_sensor.isr(mraa.EDGE_BOTH, MotionSensor.interrupt_call, self)
+        self.motion_sensor = mraa.Gpio(13)  # GPIO 1 (P13) on Linkit Smart 7688
+        self.motion_sensor.dir(mraa.DIR_IN) # set as INPUT pin
+        self.motion_sensor.isr(
+            mraa.EDGE_RISING, MotionSensor.interrupt_call, self)
+        self.motion_sensor.isr(mraa.EDGE_FALLING, MotionSensor.timeout, self)
         """
-        figured out that mt7688an has onls 8 interrupts and GPIO13 and 18 get
+        I figured out that mt7688an has onls 8 interrupts and GPIO13 and 18 get
         triggered same time because of a electic pinmux that is not handled
         in kernel. There might be more pin's triggering same time.
-        Can be avoided by checking the pin that is interrupted with the pin
-        that is whanted to be HIGH. In this case i check if pin13 is High
-        whenever a interrupt acures.
+        It can be avoided by checking the pin that is interrupted with the pin
+        that is whanted to be HIGH. In this case 'interrupt_call' first checks 
+        if pin13 is High whenever a interrupt acures.
+        And falling edge interrupt does not trigger. 
+        Have to workaround a motion reset with async timeout.
         """
 
-        self.interrupt_blocker = None
-
-
-        self.motion = Value(self.get_motion(),self.set_motion)
+        # self.motion =
         self.add_property(
             Property(self,
-                'motion_detection',
-                self.motion,
-                metadata={
-                    '@type': 'MotionProperty',
-                    'title': f'{self.name}-Motion_Status',
-                    'type': 'boolean',
-                    'description': 'motion=true, nomotion=false',
-                }
-            )
+                     'motion_detection',
+                     Value(self.get_motion(), self.set_motion),
+                     metadata={
+                         '@type': 'MotionProperty',
+                         'title': 'Bewegungs Sensor',
+                         'type': 'boolean',
+                         'description': 'motion=true, nomotion=false',
+                     }
+                     )
         )
 
     def get_motion(self):
-        logging.debug("get_motion")
-    
+        logging.debug('get_motion')
+        if self.get_property('motion_detection') is None:
+            logging.debug("get_motion is None")
+            self.set_property('motion_detection', False)
+        logging.debug(f'currently {threading.enumerate()} '
+            f'are active while {threading.activeCount() } are active '
+            f'and we are in {threading.currentThread()}')
+
     def set_motion(self, value):
-        logging.debug(f"set_motion{value}")
+        logging.debug(f'set_motion: {value}')
 
     def interrupt_call(self):
+        logging.debug(f'currently {threading.enumerate()} '
+            f'are active while {threading.activeCount() } are active '
+            f'and we are in {threading.currentThread()}')
+        sys.exit()
+        sys.exit()
+        logging.debug(f'currently {threading.enumerate()} '
+            f'are active while {threading.activeCount() } are active '
+            f'and we are in {threading.currentThread()}')
+        logging.debug('interrupt_call')
         if self.motion_sensor.read():
-            logging.debug("motion_sensor detected motion")
-            if not self.interrupt_blocker:
-                self.interrupt_blocker = True
-                self.set_property('motion_detection', True)
-                self.led_strip.motion()
-                self.set_property('motion_detection', False)
-                pass
-            self.main_loop.add_callback(self.interrupt_block_call_back)
+            logging.debug('interrupt_call read True')
+            self.set_property('motion_detection', True)
+            self.led_strip.set_property('motion_detection_follower', True)
+            logging.debug('interrupt_call back')
+            self.main_loop_time = self.main_loop.time()
+            self.n = time.strftime(
+                '%H:%M:%S', time.gmtime(self.main_loop_time))
+            logging.debug(
+                f'main_loop_time at {self.main_loop_time} or {self.n}')
+            self.delay_in_sec = 4
+            logging.debug(f'delay_in_sec: {self.delay_in_sec}')
+            self.time_when_off = self.main_loop_time + self.delay_in_sec
+            logging.debug(f'time_when_off at {self.time_when_off}')
+            self.t = time.strftime('%H:%M:%S', time.gmtime(self.time_when_off))
+            logging.debug(f'timeout at {self.t}')
+            self.main_loop.add_timeout(self.time_when_off, self.timeout)
 
-            
-    def interrupt_block_call_back(self):
-        self.blocker_seconds = 2
-        self.main_loop.call_later(self.blocker_seconds,
-                                  self.interrupt_block_call_deblock)
+    def timeout(self):
+        logging.debug('motion sensor interrupt Falling edge or timeout')
+        self.set_property('motion_detection', False)
+        self.led_strip.set_property('motion_detection_follower', False)
 
-    def interrupt_block_call_deblock(self):
-        self.interrupt_blocker = False
+    """ END OF MOTION SENSOR THING """
 
-    """ END OF MOTION SENSOE THING """
     def cancel_motion_sensor_async_tasks(self):
         logging.info('stopping the interrupt')
-        self.motion_sensor.isrExit()   
+        self.motion_sensor.isrExit()
+
 
 class VorraumNode(Thing):
     """A node in the entry of my upper Level"""
-    def __init__(self,location):
-        self.id = f'urn:dev:ops:{location}-vorraum-node'
-        self.name = f'{location}-node_functions'
+
+    def __init__(self, _location, _w1_device_id_list):
+        self.location = _location
+        self.id = f'urn:dev:ops:{self.location}-vorraum-node'
+        self.name = f'{self.location}-node_functions'
+        self.w1_device_id_list = _w1_device_id_list
         Thing.__init__(
             self,
             self.id,
@@ -380,7 +441,7 @@ class VorraumNode(Thing):
             ['EnergyMonitor'],
             'A web connected node'
         )
-        self.ina219 = ina219.INA219(busnum=0,address=0x40)
+        self.ina219 = ina219.INA219(busnum=0, address=0x40)
         self.power = Value(0.0)
         self.add_property(
             Property(self,
@@ -393,7 +454,7 @@ class VorraumNode(Thing):
                          'multipleOf': 0.01,
                          'description': 'the power used by this node',
                      }
-            )
+                     )
         )
         self.volt = Value(0.0)
         self.add_property(
@@ -407,7 +468,7 @@ class VorraumNode(Thing):
                          'multipleOf': 0.01,
                          'description': 'the voltage used by this node',
                      }
-            )
+                     )
         )
         self.current = Value(0.0)
         self.add_property(
@@ -421,7 +482,7 @@ class VorraumNode(Thing):
                          'multipleOf': 0.01,
                          'description': 'the current used by this node',
                      }
-            )
+                     )
         )
         self.temperature = Value(0.0)
         self.add_property(
@@ -435,12 +496,12 @@ class VorraumNode(Thing):
                          'multipleOf': 0.01,
                          'description': 'the temperature in the case',
                      }
-            )
+                     )
         )
-        self.timer = ioloop.PeriodicCallback(
-                self.get_sensors,
-                300000
-            )
+        self.timer = tornado.ioloop.PeriodicCallback(
+            self.get_sensors,
+            300000
+        )
         self.timer.start()
 
     def get_sensors(self):
@@ -448,76 +509,116 @@ class VorraumNode(Thing):
         self.get_temperature()
 
     def get_power(self):
+        logging.info("get_power")
         try:
-            bus_voltage     = self.ina219.get_bus_voltage_mV()
+            bus_voltage = self.ina219.get_bus_voltage_mV()
             self.volt.notify_of_external_update(bus_voltage / 1000)
-            curent          = self.ina219.get_current_mA()
+            curent = self.ina219.get_current_mA()
             self.current.notify_of_external_update(curent / 1000)
-            milliwats       = self.ina219.get_power_mW()
+            milliwats = self.ina219.get_power_mW()
             self.power.notify_of_external_update(milliwats / 1000)
         except AssertionError as e:
             logging.error(repr(e))
 
     def get_temperature(self):
-        if len(w1_device_id_list) > 1:
-            logging.error("get_temperature:more than one w1 device detected")
+        logging.info('get_temperature')
+        number_of_device_ids = len(self.w1_device_id_list)
+        if number_of_device_ids < 1:
+            logging.error('get_temperature:no w1 device detected')
             return
-        if len(w1_device_id_list) < 1:
-            logging.error("get_temperature:no w1 device detected")
-            return 
-        for device in w1_device_id_list:
-            logging.info("get_temperature:reading w1 device")
+        for device in self.w1_device_id_list:
+            logging.info(
+                f'get_temperature:reading w1 device {device}. {number_of_device_ids} to been read')
             temperature = self.get_temperature_read_one(device)
             self.temperature.notify_of_external_update(temperature)
 
     def get_temperature_read_one(self, temp_sensor_id):
         try:
-            """ read 1-wire slave file from a specific device """
+            logging.info(f'get_temperature_read_one of {temp_sensor_id}')
+            # read 1-wire slave file from a specific device
             file_name = "/sys/bus/w1/devices/" + temp_sensor_id + "/w1_slave"
             file = open(file_name)
             filecontent = file.read()
             file.close()
-            """ read temperature values and convert to readable float """
+            # read temperature values and convert to readable float
             stringvalue = filecontent.split("\n")[1].split(" ")[9]
             sensorvalue = float(stringvalue[2:]) / 1000
             temperature = '%6.2f' % sensorvalue
             return temperature
         except:
-            logging.warn("get_temperature_read_one: not able to read from: %s",temp_sensor_id)
+            logging.warn(
+                f'get_temperature_read_one: not able to read from: {temp_sensor_id}')
 
     def cancel_node_async_tasks(self):
         logging.info('stopping the node update loop task')
         self.timer.stop()
 
+
+def get_w1_devices():
+    """
+    Sensor initializeing, get the ammount of 
+    devices connected to the w1-bus.
+    """
+    w1_device_id_list = []
+    try:
+        for x in os.listdir('/sys/bus/w1/devices'):
+            if 'master' in x:
+                continue
+            w1_device_id_list.append(x)
+        return w1_device_id_list
+    except:
+        logging.warn('get_w1_devices: no devices found')
+
 def run_server():
-    get_w1_devices()
-    main_loop = get_main_loop()
-    node_functions = VorraumNode(location)
+    location = 'og-vorraum'
+    w1_device_id_list = get_w1_devices()
+    main_loop = tornado.ioloop.IOLoop.current()
+    node_functions = VorraumNode(location,w1_device_id_list)
     node_functions.get_sensors()
-    led_strip = LedStrip(location, main_loop)
-    motion_sensor = MotionSensor(location,main_loop, led_strip)
+    led_strip = LedStrip(location,
+                         main_loop,
+                         )
+    motion_sensor = MotionSensor(location,
+                                 main_loop,
+                                 led_strip,
+                                 )
 
     server = WebThingServer(MultipleThings([node_functions,
                                             led_strip,
-                                            motion_sensor],
+                                            motion_sensor,
+                                            ],
                                            'LightAndTempDevice'), port=8888)
     try:
         logging.info('starting the server')
+        print('running')
         server.start()
     except KeyboardInterrupt:
         logging.info('stopping async tasks')
-        led_strip.cancel_led_strip_async_tasks()
+        print('interrupted')
         node_functions.cancel_node_async_tasks()
+        led_strip.cancel_led_strip_async_tasks()
         motion_sensor.cancel_motion_sensor_async_tasks()
         logging.info('stopping the server')
         server.stop()
-        logging.info('done')
+        logging.info('done \n')
 
 
 if __name__ == '__main__':
+    BASE_DIR = os.getcwd()
+    FILE = os.path.join(BASE_DIR,"pwm-thing.log")
     logging.basicConfig(
+        filename=FILE,
         level=10,
-        format="%(asctime)s %(filename)s:%(lineno)s %(levelname)s %(message)s"
+        format='%(asctime)s '
+        '%(filename)s:'
+        '%(lineno)s '
+        '%(processName)s '
+        '%(process)d, '
+        '%(threadName)s '
+        '%(thread)d, '
+        '%(module)s, '
+        '%(funcName)s, '
+        '[%(levelname)s] '
+        '%(message)s'
     )
     run_server()
-
