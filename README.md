@@ -15,13 +15,15 @@ Some facts of my system:
 * openWRT v19.02 custom build 
 * libmraa
 * w1
+* smb
+* a custom pcb for manual power switching beside iot software api 
 
 * MeanWell HLG185H-24B powersupply for a pwm controlled CC LED Strip
-* DFrobot SEN0018 motion sensor
+* Welleman VMA 314 motion sensor
 * DFrobot DFR0198 Temperature sensor (DS18b20)
 * INA219 Powersensor
 
-* a footswitch
+* a footswitch 230V 10A
 
 ## what it does:
 It creates 3 webthings:
@@ -30,19 +32,22 @@ It creates 3 webthings:
 - Power & Temperature Sensor of the box
 
 ### LED Strip 
-Has 3 functions:
-- on/on
+Has 5 functions:
+- on/off
 - fade brightness
 - auto fade to point (action)
+- activate / deactivate motion handling
+- set the delay until it auto power's off the LED Strip
 
 ### Motion Sensor
 Has 2 functions:
 - show state of motion
-- set the Delay until it auto power's off the LED Strip
+- directly trigger LED-Strip async
+
 
 ### Power and Temperature
 Has 4 functions:
-- Power of the node in Wat
+- Power of the node in Watt
 - Power of the node in Ampere
 - Voltage over the node in Volt
 - Temperature in the box where all is built in.
