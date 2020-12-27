@@ -86,12 +86,12 @@ class LedStrip(Thing):
         self.day_time_start = sun.sunrise(
             self.locality.observer,
             date=datetime.now(),
-            tzinfo=self.locality.timezone)
+            tzinfo=self.locality.timezone) - timedelta(minutes=30)
         logging.debug(f'LedStrip: day_time_start:{self.day_time_start}')
         self.day_time_stop = sun.sunset(
             self.locality.observer,
             date=datetime.now(),
-            tzinfo=self.locality.timezone)
+            tzinfo=self.locality.timezone) + timedelta(minutes=30)
         logging.debug(f'LedStrip: day_time_stop:{self.day_time_stop}')
 
         self.state = Value(self.get_state(), self.toggle_digitalswitch)
